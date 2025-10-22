@@ -37,13 +37,39 @@
 #include "led.h"
 #include "uart_mcu.h"
 #include "rfid_utils.h"
+#include "hc_sr04.h"
+#include "timer_mcu.h"
 /*==================[macros and definitions]=================================*/
-#define CONFIG_BLINK_PERIOD 1000
+#define CONFIG_BLINK_PERIOD_US 1000 * 1000
 /*==================[internal data definition]===============================*/
 unsigned int last_user_ID;
 // RFID structs
 MFRC522Ptr_t mfrcInstance;
 /*==================[internal functions declaration]=========================*/
+uint16_t M;
+bool act_Med = false;
+
+void FuncTimerA(void* param){
+    vTaskNotifyGiveFromISR(medir_task_handle, pdFALSE);    /* Envía una notificación a la tarea Medir asociada al sensor */
+	
+}
+
+static void Medir(void *pvParameter)
+{
+    while (true)
+    {
+		ulTaskNotifyTake(pdTRUE, portMAX_DELAY);    /* La tarea espera en este punto hasta recibir una notificación */
+        if (act_Med == true)
+            M = HcSr04ReadDistanceInCentimeters(); // funcion del ultrasonido que mide
+
+    }
+}
+
+static void Regular_intensidad_luz(void *pvParameter){
+
+	
+
+}
 /**
  * Executed every time the card reader detects a user in
  */
@@ -72,7 +98,22 @@ MFRC522Ptr_t mfrcInstance;
 } */
 /*==================[external functions definition]==========================*/
 void app_main(void){
-	
+
+	HcSr04Init(GPIO_3, GPIO_2); // trigger : pulso cuando dispara el sonido //Echo pulso que recibe
+
+	 /* Inicialización de timers */
+    timer_config_t timer_led_1 = {
+        .timer = TIMER_A,
+        .period = CONFIG_BLINK_PERIOD_US,
+        .func_p = FuncTimerA,
+        .param_p = NULL
+    };
+    
+	TimerInit(&timer_led_1);
+	xTaskCreate(&Medir, "MEDIR", 512, NULL, 5, &medir_task_handle);
+	 
+	/* Inicialización del conteo de timers */
+    TimerStart(timer_led_1.timer);
 /* 	LedsInit();
 	serial_config_t UART_USB;
 	UART_USB.baud_rate = 115200;
