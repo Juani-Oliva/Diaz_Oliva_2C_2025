@@ -67,9 +67,12 @@ static void Medir(void *pvParameter)
 
 static void Regular_intensidad_luz(void *pvParameter){
 
+
 	
 
 }
+
+static void Regular_apertura_haz(void *pvParameter){
 /**
  * Executed every time the card reader detects a user in
  */
