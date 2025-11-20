@@ -2,7 +2,7 @@
  *
  * \section genDesc General Description
  *
- * Proyecto integrador de la cátedra Electrónica Programable en la que se realiza un prototipado de una 
+ * Proyecto integrador de la cátedra Electrónica Programable en la que se realiza un prototipado de una
  * luz de dentista que sea ajustable automaticamente en intensidad y apertura de iris de luz dependiendo
  * de la distancia al paciente
  *
@@ -23,9 +23,14 @@
  * |   Date	    | Description                                    |
  * |:----------:|:-----------------------------------------------|
  * | 22/10/2025 | Document creation		                         |
+ * | 19/11/2025 | Presentation			                         |
+ * | 20/11/2025 | Documentation			                         |
  *
  * @author Gastón Jair Díaz (diazgastonj@gmail.com)
  * @author Juan Ignacio Oliva (juaaaaanioliiiva@gmail.com)
+ * 
+ * @note Led y motor conectado a PWM con salidas de 5v de la placa
+ * @note PWM de led puesto a 100Hz, con 50 se veía el titileo
  */
 
 /*==================[inclusions]=============================================*/
@@ -36,107 +41,155 @@
 #include "freertos/task.h"
 #include "led.h"
 #include "uart_mcu.h"
-#include "rfid_utils.h"
+#include "pwm_mcu.h"
 #include "hc_sr04.h"
-#include "timer_mcu.h"
+#include "servo_sg90.h"
 /*==================[macros and definitions]=================================*/
-#define CONFIG_BLINK_PERIOD_US 1000 * 1000
+/**
+ * @brief Lista constantes de configuración del proyecto
+ */
+#define DISTANCE_CLOSE  8	   ///<  distancia en cm para modo de trabajo intenso 
+#define DISTANCE_MEDIUM  16   ///<  distancia en cm para modo de trabajo moderado 
+#define DISTANCE_FAR  24	   ///<  distancia en cm para modo de reposo 
+#define DISTANCE_OFF  30	   ///<  distancia en cm para modo apagado 
+#define DUTY_CYCLE_MAX  100   ///<  ciclo de trabajo maximo  
+#define DUTY_CYCLE_MEDIUM  60 ///<  ciclo de trabajo medio medio 
+#define DUTY_CYCLE_LOW  30	   ///<  ciclo de trabajo bajo 
+#define DUTY_CYCLE_OFF  0	   ///<  ciclo de trabajo apagado 
+#define APERTURE_WIDE_OPEN -90   ///<  apertura de iris maxima 
+#define APERTURE_MEDIUM_OPEN 0 ///<  apertura de iris media 
+#define APERTURE_NARROW_OPEN 90  ///<  apertura de iris minima 
+
+#define CONFIG_OPERATION_CYCLE_MS 500 ///<  Tiempo de período de operación en milisegundos 
+#define CONFIG_MEASUREMENT_CYCLE_MS 200 ///<  Tiempo de perído de medición en milisegundos 
 /*==================[internal data definition]===============================*/
-unsigned int last_user_ID;
-// RFID structs
-MFRC522Ptr_t mfrcInstance;
-/*==================[internal functions declaration]=========================*/
-uint16_t M;
-bool act_Med = false;
+uint16_t _distancia;
+/**
+ * \def _medicionActivada
+ * \todo Variable para activar o desactivar modo manual de medición
+ */
+bool _medicionActivada = true;
 
-void FuncTimerA(void* param){
-    vTaskNotifyGiveFromISR(medir_task_handle, pdFALSE);    /* Envía una notificación a la tarea Medir asociada al sensor */
-	
-}
+TaskHandle_t medir_task_handle = NULL;
+TaskHandle_t PotenciaLuz_task_handle = NULL;
+TaskHandle_t AperturaHaz_task_handle = NULL;
+TaskHandle_t Uart_task_handle = NULL;
 
+
+/**
+ * @brief Mide distancia con HC-SR04 y actualiza variable global 
+ */
 static void Medir(void *pvParameter)
 {
-    while (true)
-    {
-		ulTaskNotifyTake(pdTRUE, portMAX_DELAY);    /* La tarea espera en este punto hasta recibir una notificación */
-        if (act_Med == true)
-            M = HcSr04ReadDistanceInCentimeters(); // funcion del ultrasonido que mide
-
-    }
-}
-
-static void Regular_intensidad_luz(void *pvParameter){
-
-
+	while (true)
+	{
+		
 	
+		_distancia = HcSr04ReadDistanceInCentimeters(); // Realiza la medición de distancia
+		
+		vTaskDelay(pdMS_TO_TICKS(CONFIG_MEASUREMENT_CYCLE_MS));
+	}
+}
+/**
+ * @brief Envía datos de potencia y distancia por UART
+ */
+void EnviarDatosUART()
+{
+	while (true)
+	{
+		UartSendString(UART_PC, "Potencia: ");
+		if (_distancia < DISTANCE_CLOSE) 
+			UartSendString(UART_PC, (char*)UartItoa(DUTY_CYCLE_MAX, 10));
+		else if (_distancia < DISTANCE_MEDIUM)
+			UartSendString(UART_PC, (char*)UartItoa(DUTY_CYCLE_MEDIUM, 10));
+		else if (_distancia < DISTANCE_FAR)
+			UartSendString(UART_PC, (char*)UartItoa(DUTY_CYCLE_LOW, 10));
+		else if	(_distancia > DISTANCE_OFF) 
+			UartSendString(UART_PC, (char*)UartItoa(DUTY_CYCLE_OFF, 10));
 
+		UartSendString(UART_PC, "\r\n Distancia: ");
+		UartSendString(UART_PC, (char*)UartItoa(_distancia, 10));
+		UartSendString(UART_PC, "cm\r\n");
+
+		vTaskDelay(pdMS_TO_TICKS(CONFIG_OPERATION_CYCLE_MS));
+	}
 }
 
-static void Regular_apertura_haz(void *pvParameter){
 /**
- * Executed every time the card reader detects a user in
+ * @brief Regula la intensidad de la luz con PWM dependiendo de la distancia medida
  */
-/* void userTapIn() {
+void Regular_intensidad_luz()
+{
+ while (true)
+ {
+		if (_distancia < DISTANCE_CLOSE) 
+			PWMSetDutyCycle(PWM_2, DUTY_CYCLE_MAX);
+		else if (_distancia < DISTANCE_MEDIUM)
+			PWMSetDutyCycle(PWM_2, DUTY_CYCLE_MEDIUM);
+		else if (_distancia < DISTANCE_FAR)
+			PWMSetDutyCycle(PWM_2, DUTY_CYCLE_LOW);
+		else if	(_distancia > DISTANCE_OFF) 
+			PWMSetDutyCycle(PWM_2, DUTY_CYCLE_OFF);
+	
+		//PWMSetDutyCycle(PWM_2, DUTY_CYCLE_OFF);
+	
+		vTaskDelay(pdMS_TO_TICKS(CONFIG_OPERATION_CYCLE_MS));
+ }
+}
+/**
+ * @brief Regula apartura del iris dependiendo de la distancia medida
+ */
+void Regular_apertura_haz()
+{
+	while (true)
+	{
+		if (_distancia < DISTANCE_CLOSE) 
+			ServoMove(SERVO_1, APERTURE_NARROW_OPEN);
+		else if (_distancia < DISTANCE_MEDIUM)
+			ServoMove(SERVO_1, APERTURE_MEDIUM_OPEN);
+		else if (_distancia < DISTANCE_FAR)
+			ServoMove(SERVO_1, APERTURE_WIDE_OPEN);
+		else if	(_distancia > DISTANCE_OFF)	 
+			ServoMove(SERVO_1, APERTURE_WIDE_OPEN);
 
-//	show card UID
-	UartSendString(UART_PC,"\nCard uid bytes: ");
-	for (uint8_t i = 0; i < mfrcInstance->uid.size; i++) {
-		UartSendString(UART_PC," 0X");
-		UartSendString(UART_PC, (char*)UartItoa(mfrcInstance->uid.uidByte[i], 16));
-		UartSendString(UART_PC," ");
+		vTaskDelay(pdMS_TO_TICKS(CONFIG_OPERATION_CYCLE_MS));
 	}
-	UartSendString(UART_PC,"\n\r");
-	// Convert the uid bytes to an integer, byte[0] is the MSB
-	last_user_ID =
-		(int)mfrcInstance->uid.uidByte[3] |
-		(int)mfrcInstance->uid.uidByte[2] << 8 |
-		(int)mfrcInstance->uid.uidByte[1] << 16 |
-		(int)mfrcInstance->uid.uidByte[0] << 24;
+	
+}
+/**
+ * @brief Función que acumula las otras pero sacada de uso
+ * 
+ * @deprecated Deprecado por no funionamiento (creemos que por los while sin el vTaskDelay)
+ */
+static void AjustarEInformar(void *pvParameter)
+{
+	while (true)
+	{
+		Regular_intensidad_luz(NULL);
+		Regular_apertura_haz(NULL);
+		EnviarDatosUART(NULL);
 
-	UartSendString(UART_PC,"Card Read user ID: ");
-	UartSendString(UART_PC, (char*)UartItoa(last_user_ID, 10));
-	UartSendString(UART_PC,"\n\r");
-
-
-} */
+		vTaskDelay(pdMS_TO_TICKS(CONFIG_OPERATION_CYCLE_MS));
+	}
+}
 /*==================[external functions definition]==========================*/
-void app_main(void){
+void app_main(void)
+{
 
-	HcSr04Init(GPIO_3, GPIO_2); // trigger : pulso cuando dispara el sonido //Echo pulso que recibe
-
-	 /* Inicialización de timers */
-    timer_config_t timer_led_1 = {
-        .timer = TIMER_A,
-        .period = CONFIG_BLINK_PERIOD_US,
-        .func_p = FuncTimerA,
-        .param_p = NULL
-    };
-    
-	TimerInit(&timer_led_1);
-	xTaskCreate(&Medir, "MEDIR", 512, NULL, 5, &medir_task_handle);
-	 
-	/* Inicialización del conteo de timers */
-    TimerStart(timer_led_1.timer);
-/* 	LedsInit();
 	serial_config_t UART_USB;
 	UART_USB.baud_rate = 115200;
 	UART_USB.port = UART_PC;
 	UartInit(&UART_USB);
-	setupRFID(&mfrcInstance);
+	ServoInit(SERVO_1, GPIO_19); // Inicializa servo en GPIO19
+	PWMInit(PWM_2, GPIO_20, 100); // Inicializa PWM en GPIO_20 a 100Hz . GPIO de 5v
+	HcSr04Init(GPIO_3, GPIO_2);
+	
+	xTaskCreate(Medir, "Medir", 2048, NULL, 5, &medir_task_handle);
+	xTaskCreate(Regular_apertura_haz, "AperturaHaz", 4096, NULL, 5, &AperturaHaz_task_handle);
+	xTaskCreate(Regular_intensidad_luz, "RegularLuz", 4096, NULL, 5, &PotenciaLuz_task_handle);
+	xTaskCreate(EnviarDatosUART, "EnviarDatos", 4096, NULL, 5, &Uart_task_handle);	
 
-	UartSendString(UART_PC,"Init MRFC522 test.\r\n"); */
-	/*
-    while(true){
-		UartSendString(UART_PC,"Reading... \r\n");
-		if (PICC_IsNewCardPresent(mfrcInstance)) {
-			if (PICC_ReadCardSerial(mfrcInstance)) {
-				LedOn(LED_1);
-				userTapIn();
-				LedOff(LED_1);
-			}
-		}
-		vTaskDelay(CONFIG_BLINK_PERIOD / portTICK_PERIOD_MS);
-	}
-		*/
 }
 /*==================[end of file]============================================*/
+
+
